@@ -1,0 +1,2 @@
+# mlflow.set_tracking_uri("MLFLOW-TRACKING-URI")
+mlflow.set_tracking_uri("azureml://westus3.api.azureml.ms/mlflow/v1.0/subscriptions/4a25e6a5-5e1c-491a-a0f4-e5ffc575dc1b/resourceGroups/1primer_test_azure/providers/Microsoft.MachineLearningServices/workspaces/test1")
