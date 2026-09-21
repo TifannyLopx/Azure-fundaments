@@ -1,0 +1,103 @@
+name: Deploy model to online endpoint (PR comment)
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  deploy-prod:
+    if: >-
+      github.event.issue.pull_request != null &&
+      contains(github.event.comment.body, '/deploy-prod')
+    runs-on: ubuntu-latest
+    environment: prod
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ github.event.issue.number }}/head
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Azure SDK dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install azure-ai-ml azure-identity
+
+      - name: Sign in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Install Azure ML CLI
+        run: |
+          az extension add -n ml -y
+
+      - name: Detect Azure ML workspace
+        id: detect
+        run: |
+          RG_NAME=$(az group list --query "[?starts_with(name,'rg-ai300-l')].name | [0]" -o tsv)
+          if [ -z "$RG_NAME" ]; then
+            echo "No resource group starting with rg-ai300-l found." >&2
+            exit 1
+          fi
+
+          WS_NAME=$(az ml workspace list --resource-group "$RG_NAME" --query "[?starts_with(name,'mlw-ai300-l')].name | [0]" -o tsv)
+          if [ -z "$WS_NAME" ]; then
+            echo "No workspace starting with mlw-ai300-l found in $RG_NAME." >&2
+            exit 1
+          fi
+
+          SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+
+          # unique, deterministic, region-safe name
+          SUFFIX="${WS_NAME#mlw-ai300-l}"
+          ENDPOINT_NAME="diabetes-endpoint-${SUFFIX:0:8}"
+
+          echo "resource_group=$RG_NAME" >> "$GITHUB_OUTPUT"
+          echo "workspace=$WS_NAME" >> "$GITHUB_OUTPUT"
+          echo "subscription_id=$SUBSCRIPTION_ID" >> "$GITHUB_OUTPUT"
+          echo "endpoint_name=$ENDPOINT_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy model to managed online endpoint
+        id: deploy
+        run: |
+          python src/deploy_to_online_endpoint.py \
+            --subscription-id "${{ steps.detect.outputs.subscription_id }}" \
+            --resource-group "${{ steps.detect.outputs.resource_group }}" \
+            --workspace "${{ steps.detect.outputs.workspace }}" \
+            --endpoint-name "${{ steps.detect.outputs.endpoint_name }}" \
+            --deployment-name "blue"
+
+      - name: Comment deployment result on pull request
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.issue.number;
+            const body = [
+              '🚀 Deployment workflow completed.',
+              '',
+              'The diabetes model has been deployed (or updated) on the managed online endpoint.',
+              '',
+              'Endpoint name: `${{ steps.detect.outputs.endpoint_name }}`',
+              'Deployment name: `blue`',
+              'Data collection for model inputs and outputs is enabled on this deployment.',
+              '',
+              'Check the workflow run logs for the endpoint scoring URI and verify the endpoint in Azure Machine Learning studio.',
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body,
+            });
